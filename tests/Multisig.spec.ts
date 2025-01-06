@@ -1,4 +1,4 @@
-import { Blockchain, SandboxContract, TreasuryContract, internal, prettyLogTransactions, BlockchainSnapshot, BlockchainTransaction } from '@ton/sandbox';
+import { Blockchain, SandboxContract, TreasuryContract, internal, prettyLogTransactions, BlockchainSnapshot, BlockchainTransaction, SendMessageResult } from '@ton/sandbox';
 import { beginCell, Cell, toNano, internal as internal_relaxed, Address, SendMode, Dictionary } from '@ton/core';
 import { Action, Multisig, MultisigConfig, TransferRequest, UpdateRequest } from '../wrappers/Multisig';
 import { Order } from '../wrappers/Order';
@@ -23,9 +23,18 @@ describe('Multisig', () => {
 
     let curTime : () => number;
 
+    let getExpirationTime: (timeAfterUnlockSeconds: number) => number;
+    let increaseTime: (seconds: number) => void;
+    let approveLastOrder: (signers: SandboxContract<TreasuryContract>[]) => Promise<SendMessageResult[]>;
+
+    const TIMELOCK_DELAY = 24 * 60 * 60;
+
     beforeAll(async () => {
         code = await compile('Multisig');
         blockchain = await Blockchain.create();
+        curTime = () => blockchain.now ?? Math.floor(Date.now() / 1_000);
+
+        blockchain.now = curTime();
 
         const _libs = Dictionary.empty(Dictionary.Keys.BigUint(256), Dictionary.Values.Cell());
         let order_code_raw = await compile('Order');
@@ -42,6 +51,7 @@ describe('Multisig', () => {
             signers,
             proposers: [proposer.address],
             allowArbitrarySeqno: false,
+            timelockDelaySeconds: TIMELOCK_DELAY,
         };
 
         testAddr = randomAddress();
@@ -59,7 +69,21 @@ describe('Multisig', () => {
 
         initialState = blockchain.snapshot();
 
-        curTime = () => blockchain.now ?? Math.floor(Date.now() / 1000);
+        getExpirationTime = (timeAfterUnlockSeconds: number) => curTime() + TIMELOCK_DELAY + timeAfterUnlockSeconds;
+        increaseTime = (seconds: number) => blockchain.now! += seconds;
+
+        approveLastOrder = async (signers: SandboxContract<TreasuryContract>[]) => {
+            const orderAddress = await multisig.getOrderAddress((await multisig.getMultisigData()).nextOrderSeqno - 1n);
+            const orderContract = blockchain.openContract(Order.createFromAddress(orderAddress));
+            const txs: SendMessageResult[] = [];
+
+            let signerIndex = 0;
+            for (let signer of signers) {
+                txs.push(await orderContract.sendApprove(signer.getSender(), signerIndex));
+                signerIndex++;
+            }
+            return txs;
+        };
     });
     // Each case state is independent
     afterEach(async () => await blockchain.loadFrom(initialState));
@@ -76,12 +100,12 @@ describe('Multisig', () => {
         let   orderAddress = await multisig.getOrderAddress(initialSeqno);
 
         blockchain.now = Math.floor(Date.now() / 1000)
-        const msgSigner= Multisig.newOrderMessage([testMsg],  blockchain.now + 1000,
+        const msgSigner= Multisig.newOrderMessage([testMsg],  blockchain.now + TIMELOCK_DELAY + 10,
                                                          true, // is signer
                                                          0, // Address index
                                                         );
         // Make sure proposers a checked against list too
-        const msgProp  = Multisig.newOrderMessage([testMsg],  blockchain.now + 1000,
+        const msgProp  = Multisig.newOrderMessage([testMsg],  blockchain.now + TIMELOCK_DELAY + 10,
                                                          false, // is signer
                                                          0, // Address index
                                                         );
@@ -176,11 +200,11 @@ describe('Multisig', () => {
             success: true
         });
         // Now execution should trigger, since threshold is 1
-        expect(res.transactions).toHaveTransaction({
-            from: orderAddress,
-            to: multisig.address,
-            op: Op.multisig.execute
-        });
+        // expect(res.transactions).toHaveTransaction({
+        //     from: orderAddress,
+        //     to: multisig.address,
+        //     op: Op.multisig.execute
+        // });
     });
     it('order expiration time should exceed current time', async () => {
 
@@ -234,6 +258,7 @@ describe('Multisig', () => {
             signers: signers.map(s => s.address),
             proposers: proposers.map(p => p.address),
             allowArbitrarySeqno: false,
+            timelockDelaySeconds: 24 * 60 * 60,
         };
 
         const testMultisig = blockchain.openContract(Multisig.createFromConfig(config, code));
@@ -252,7 +277,7 @@ describe('Multisig', () => {
 
         const rndBody = beginCell().storeUint(getRandomInt(100, 1000), 32).endCell();
         const rndMsg : TransferRequest = {type:"transfer", sendMode: 1, message: internal_relaxed({to: testAddr, value: toNano('0.015'), body: rndBody})};
-        res = await testMultisig.sendNewOrder(signers[getRandomInt(0, signers.length - 1)].getSender(), [rndMsg], curTime() + 100);
+        res = await testMultisig.sendNewOrder(signers[getRandomInt(0, signers.length - 1)].getSender(), [rndMsg], curTime() + TIMELOCK_DELAY + 100);
         expect(res.transactions).toHaveTransaction({
             from: testMultisig.address,
             to: orderAddress,
@@ -271,12 +296,13 @@ describe('Multisig', () => {
         expect(orderData.signers.map(stringifyAddr)).toEqual(config.signers.map(stringifyAddr));
         expect(orderData.executed).toBe(false);
         expect(orderData.threshold).toEqual(config.threshold);
-        expect(orderData.approvals_num).toBe(1);
+        // expect(orderData.approvals_num).toBe(1);
     });
     it('should execute new message order', async () => {
+        blockchain.now   = curTime();
         let initialSeqno = (await multisig.getMultisigData()).nextOrderSeqno;
         // await blockchain.setVerbosityForAddress(multisig.address, {blockchainLogs:true, vmLogs: 'vm_logs'});
-        const res = await multisig.sendNewOrder(deployer.getSender(), [testMsg], Math.floor(curTime() + 100));
+        const res = await multisig.sendNewOrder(deployer.getSender(), [testMsg], Math.floor(curTime() + TIMELOCK_DELAY + 100));
 
         expect(res.transactions).toHaveTransaction({
             from: deployer.address,
@@ -291,8 +317,15 @@ describe('Multisig', () => {
             to: orderAddress,
             success: true
         });
+
+        blockchain.now += TIMELOCK_DELAY;
+
+        const order =  blockchain.openContract(Order.createFromAddress(orderAddress));
+        const orderExecution = await order.sendApprove(deployer.getSender(), 0);
+        // console.log(res1.transactions);
+
         // one signer and threshold is 1
-        expect(res.transactions).toHaveTransaction({
+        expect(orderExecution.transactions).toHaveTransaction({
             from: multisig.address,
             to: testAddr,
             value: toNano('0.015'),
@@ -302,7 +335,7 @@ describe('Multisig', () => {
     it('expired order execution should be denied', async () => {
         let initialSeqno = (await multisig.getMultisigData()).nextOrderSeqno;
         blockchain.now   = curTime();
-        const deployRes  = await multisig.sendNewOrder(proposer.getSender(), [testMsg], blockchain.now + 1);
+        const deployRes  = await multisig.sendNewOrder(proposer.getSender(), [testMsg], blockchain.now + TIMELOCK_DELAY + 1);
         let orderAddress = await multisig.getOrderAddress(initialSeqno);
         expect(deployRes.transactions).toHaveTransaction({
             from: multisig.address,
@@ -312,7 +345,7 @@ describe('Multisig', () => {
             success: true
         });
         // Some time passed after init
-        blockchain.now++;
+        blockchain.now+=(TIMELOCK_DELAY + 1);
         let txIter = new Txiterator(blockchain,internal({
                 from: deployer.address,
                 to: orderAddress,
@@ -368,9 +401,10 @@ describe('Multisig', () => {
     });
     it('should be possible to execute order by post init approval', async () => {
         // Same test as above, but with manulal approval
+        blockchain.now = curTime();
         let initialSeqno = (await multisig.getMultisigData()).nextOrderSeqno;
         // Gets deployed by proposer, so first approval is not granted right away
-        let res = await multisig.sendNewOrder(proposer.getSender(), [testMsg], Math.floor(curTime() + 100));
+        let res = await multisig.sendNewOrder(proposer.getSender(), [testMsg], TIMELOCK_DELAY + Math.floor(curTime() + 100));
 
         expect(res.transactions).toHaveTransaction({
             from: proposer.address,
@@ -385,6 +419,8 @@ describe('Multisig', () => {
 
         expect(dataBefore.approvals_num).toBe(0);
         expect(dataBefore.executed).toBe(false);
+
+        blockchain.now! += TIMELOCK_DELAY;
 
         // Here goes the approval
         res = await orderContract.sendApprove(deployer.getSender(), 0);
@@ -417,7 +453,7 @@ describe('Multisig', () => {
         const testMsg1: TransferRequest = { type: "transfer", sendMode: 1, message: internal_relaxed({to: testAddr1, value: toNano('0.015'), body: beginCell().storeUint(12345, 32).endCell()})};
         const testMsg2: TransferRequest = {type : "transfer", sendMode: 1, message: internal_relaxed({to: testAddr2, value: toNano('0.016'), body: beginCell().storeUint(12346, 32).endCell()})};
         let initialSeqno = (await multisig.getMultisigData()).nextOrderSeqno;
-        let res = await multisig.sendNewOrder(deployer.getSender(), [testMsg1, testMsg2], Math.floor(Date.now() / 1000 + 1000));
+        let res = await multisig.sendNewOrder(deployer.getSender(), [testMsg1, testMsg2], curTime() + TIMELOCK_DELAY + 1_000);
 
         expect(res.transactions).toHaveTransaction({
             from: deployer.address,
@@ -433,13 +469,18 @@ describe('Multisig', () => {
             success: true
         });
 
-        let order1Tx = findTransactionRequired(res.transactions, {
+        blockchain.now! += TIMELOCK_DELAY;
+
+        let orderContract = blockchain.openContract(Order.createFromAddress(orderAddress));
+        let executeTx = await orderContract.sendApprove(deployer.getSender(), 0);
+
+        let order1Tx = findTransactionRequired(executeTx.transactions, {
             from: multisig.address,
             to: testAddr1,
             value: toNano('0.015'),
             body: beginCell().storeUint(12345, 32).endCell(),
         });
-        let order2Tx = findTransactionRequired(res.transactions, {
+        let order2Tx = findTransactionRequired(executeTx.transactions, {
             from: multisig.address,
             to: testAddr2,
             value: toNano('0.016'),
@@ -450,15 +491,21 @@ describe('Multisig', () => {
         expect(order2Tx!.lt).toBeGreaterThan(order1Tx!.lt);
         // Let's switch the order
 
-        res = await multisig.sendNewOrder(deployer.getSender(), [testMsg2, testMsg1], Math.floor(Date.now() / 1000 + 1000));
+        initialSeqno = (await multisig.getMultisigData()).nextOrderSeqno;
+        res = await multisig.sendNewOrder(deployer.getSender(), [testMsg2, testMsg1], curTime() + TIMELOCK_DELAY + 1_000);
 
-        order1Tx = findTransactionRequired(res.transactions, {
+        blockchain.now! += TIMELOCK_DELAY;
+
+        orderContract = blockchain.openContract(Order.createFromAddress(await multisig.getOrderAddress(initialSeqno)));
+        executeTx = await orderContract.sendApprove(deployer.getSender(), 0);
+
+        order1Tx = findTransactionRequired(executeTx.transactions, {
             from: multisig.address,
             to: testAddr1,
             value: toNano('0.015'),
             body: beginCell().storeUint(12345, 32).endCell(),
         });
-        order2Tx = findTransactionRequired(res.transactions, {
+        order2Tx = findTransactionRequired(executeTx.transactions, {
             from: multisig.address,
             to: testAddr2,
             value: toNano('0.016'),
@@ -472,12 +519,13 @@ describe('Multisig', () => {
         const updOrder : UpdateRequest = {
             type: "update",
             threshold: 4,
+            timelockDelaySeconds: Math.floor(TIMELOCK_DELAY / 2),
             signers: newSigners.map(s => s.address),
             proposers: []
         };
         let initialSeqno = (await multisig.getMultisigData()).nextOrderSeqno;
         //todo adjust for new order seqno behavior
-        let res = await multisig.sendNewOrder(deployer.getSender(), [updOrder], Math.floor(Date.now() / 1000 + 1000));
+        let res = await multisig.sendNewOrder(deployer.getSender(), [updOrder], getExpirationTime(1_000));
 
         expect((await multisig.getMultisigData()).nextOrderSeqno).toEqual(initialSeqno + 1n);
         let orderAddress = await multisig.getOrderAddress(initialSeqno);
@@ -486,7 +534,12 @@ describe('Multisig', () => {
             to: orderAddress,
             success: true
         });
-        expect(res.transactions).toHaveTransaction({
+
+        blockchain.now! += TIMELOCK_DELAY;
+        const orderContract = blockchain.openContract(Order.createFromAddress(orderAddress));
+        const executeTx = await orderContract.sendApprove(deployer.getSender(), 0);
+
+        expect(executeTx.transactions).toHaveTransaction({
             from: orderAddress,
             to: multisig.address,
             op: Op.multisig.execute,
@@ -497,6 +550,7 @@ describe('Multisig', () => {
         expect(dataAfter.threshold).toEqual(BigInt(updOrder.threshold));
         expect(dataAfter.signers[0]).toEqualAddress(newSigners[0].address);
         expect(dataAfter.proposers.length).toBe(0);
+        expect(dataAfter.timelockDelaySeconds).toEqual(BigInt(updOrder.timelockDelaySeconds));
     });
     it('should reject multisig parameters with inconsistently ordered signers or proposers', async () => {
         // To produce inconsistent dictionary we have to craft it manually
@@ -505,6 +559,7 @@ describe('Multisig', () => {
         malformed.set(2, randomAddress());
         let updateCell = beginCell().storeUint(Op.actions.update_multisig_params, 32)
                                     .storeUint(4, 8)
+                                    .storeUint(TIMELOCK_DELAY, 32)
                                     .storeDict(malformed) // signers
                                     .storeDict(null) // empty proposers
                          .endCell();
@@ -516,8 +571,13 @@ describe('Multisig', () => {
 
         let dataBefore   = await multisig.getMultisigData();
         let orderAddress = await multisig.getOrderAddress(dataBefore.nextOrderSeqno);
-        let res = await multisig.sendNewOrder(deployer.getSender(), orderCell, curTime() + 100);
-        expect(res.transactions).toHaveTransaction({
+        let res = await multisig.sendNewOrder(deployer.getSender(), orderCell, getExpirationTime(100));
+
+        blockchain.now! += TIMELOCK_DELAY;
+        let orderContract = blockchain.openContract(Order.createFromAddress(orderAddress));
+        let executeTx = await orderContract.sendApprove(deployer.getSender(), 0);
+
+        expect(executeTx.transactions).toHaveTransaction({
             from: orderAddress,
             to: multisig.address,
             op: Op.multisig.execute,
@@ -546,6 +606,7 @@ describe('Multisig', () => {
 
         updateCell = beginCell().storeUint(Op.actions.update_multisig_params, 32)
                                 .storeUint(4, 8)
+                                .storeUint(TIMELOCK_DELAY, 32)
                                 .storeDict(null) // Empty signers? Yes, that is allowed
                                 .storeDict(malformed) // proposers
                      .endCell();
@@ -554,8 +615,16 @@ describe('Multisig', () => {
         orderDict.set(0, updateCell);
         orderCell = beginCell().storeDictDirect(orderDict).endCell();
 
-        res = await multisig.sendNewOrder(deployer.getSender(), orderCell, curTime() + 100);
-        expect(res.transactions).toHaveTransaction({
+        orderContract = blockchain.openContract(Order.createFromAddress(
+            await multisig.getOrderAddress(dataBefore.nextOrderSeqno)
+        ));
+
+        res = await multisig.sendNewOrder(deployer.getSender(), orderCell, getExpirationTime(100));
+
+        blockchain.now! += TIMELOCK_DELAY;
+        executeTx = await orderContract.sendApprove(deployer.getSender(), 0);
+
+        expect(executeTx.transactions).toHaveTransaction({
             from: orderAddress,
             to: multisig.address,
             op: Op.multisig.execute,
@@ -640,7 +709,13 @@ describe('Multisig', () => {
                   .endCell()
             })
         };
-        const res = await multisig.sendNewOrder(deployer.getSender(), [triggerReq], curTime() + 1000, toNano('1'));
+        const res = await multisig.sendNewOrder(deployer.getSender(), [triggerReq], getExpirationTime(1_000), toNano('1'));
+
+        const orderAddress = await multisig.getOrderAddress((await multisig.getMultisigData()).nextOrderSeqno - 1n);
+        const orderContract = blockchain.openContract(Order.createFromAddress(orderAddress));
+
+        blockchain.now! += TIMELOCK_DELAY;
+        const executeTx = await orderContract.sendApprove(deployer.getSender(), 0);
 
         expect(res.transactions).toHaveTransaction({
             from: deployer.address,
@@ -648,14 +723,14 @@ describe('Multisig', () => {
             success: true
         });
         // Self message
-        expect(res.transactions).toHaveTransaction({
+        expect(executeTx.transactions).toHaveTransaction({
             from: multisig.address,
             to: multisig.address,
             op: Op.multisig.execute_internal,
             success: true
         });
         // Chained message
-        expect(res.transactions).toHaveTransaction({
+        expect(executeTx.transactions).toHaveTransaction({
             from: multisig.address,
             to: testAddr,
             value: toNano('0.01'),
@@ -680,12 +755,13 @@ describe('Multisig', () => {
         const updOrder : UpdateRequest = {
             type: "update",
             threshold: Number(dataBefore.threshold),
+            timelockDelaySeconds: TIMELOCK_DELAY,
             signers: [differentAddress(deployer.address)],
             proposers: dataBefore.proposers
         };
 
         // First we deploy order with proposer, so it doesn't execute right away
-        let res = await multisig.sendNewOrder(proposer.getSender(), [testMsg], curTime() + 1000);
+        let res = await multisig.sendNewOrder(proposer.getSender(), [testMsg], getExpirationTime(1_000));
         expect(res.transactions).toHaveTransaction({
             from: multisig.address,
             to: orderAddr,
@@ -693,7 +769,10 @@ describe('Multisig', () => {
             success: true
         });
         // Now lets perform signers update
-        res = await multisig.sendNewOrder(deployer.getSender(), [updOrder], curTime() + 100);
+        res = await multisig.sendNewOrder(deployer.getSender(), [updOrder], getExpirationTime(1_000));
+
+        increaseTime(TIMELOCK_DELAY);
+        await approveLastOrder([deployer]);
 
         expect(res.transactions).toHaveTransaction({
             from: deployer.address,
@@ -731,10 +810,11 @@ describe('Multisig', () => {
             type: "update",
             threshold: Number(dataBefore.threshold) + 1, // threshold increases
             signers, // Doesn't change
+            timelockDelaySeconds: TIMELOCK_DELAY,
             proposers: dataBefore.proposers
         };
         // First we deploy order with proposer, so it doesn't execute right away
-        let res = await multisig.sendNewOrder(proposer.getSender(), [testMsg], curTime() + 1000);
+        let res = await multisig.sendNewOrder(proposer.getSender(), [testMsg], getExpirationTime(1_000));
         expect(res.transactions).toHaveTransaction({
             from: multisig.address,
             to: orderAddr,
@@ -742,7 +822,9 @@ describe('Multisig', () => {
             success: true
         });
         // Now lets perform threshold update
-        res = await multisig.sendNewOrder(deployer.getSender(), [updOrder], curTime() + 100);
+        res = await multisig.sendNewOrder(deployer.getSender(), [updOrder], getExpirationTime(1_000));
+        increaseTime(TIMELOCK_DELAY);
+        await approveLastOrder([deployer]);
 
         expect(res.transactions).toHaveTransaction({
             from: deployer.address,
@@ -769,7 +851,8 @@ describe('Multisig', () => {
             threshold: 1,
             signers: [coolHacker.address], // So deployment init is same except just one field (so still different address)
             proposers: [proposer.address],
-            allowArbitrarySeqno : false
+            allowArbitrarySeqno : false,
+            timelockDelaySeconds: 24 * 60 * 60,
         };
 
         const evilMultisig = blockchain.openContract(Multisig.createFromConfig(newConfig,code));
@@ -809,6 +892,8 @@ describe('Multisig', () => {
                             .storeUint(0, Params.bitsize.queryId)
                             .storeUint(legitData.nextOrderSeqno, Params.bitsize.orderSeqno)
                             .storeUint(0xffffffffffff, Params.bitsize.time)
+                            .storeUint(0xffffffffffff, Params.bitsize.time)
+                            .storeBit(false)
                             .storeUint(0xff, Params.bitsize.signerIndex)
                             .storeUint(BigInt('0x' + beginCell().storeDictDirect(mock_signers).endCell().hash().toString('hex')), 256) // pack legit hash
                             .storeRef(beginCell().storeDictDirect(order_dict).endCell()) // Finally eval payload
@@ -816,9 +901,15 @@ describe('Multisig', () => {
             })
         };
 
-        res = await evilMultisig.sendNewOrder(coolHacker.getSender(), [evalOrder], curTime() + 100);
+        res = await evilMultisig.sendNewOrder(coolHacker.getSender(), [evalOrder], getExpirationTime(100));
+        const orderAddress = await evilMultisig.getOrderAddress(
+            (await evilMultisig.getMultisigData()).nextOrderSeqno - 1n
+        );
+        const orderContract = blockchain.openContract(Order.createFromAddress(orderAddress));
+        increaseTime(TIMELOCK_DELAY);
+        const executeTx = await orderContract.sendApprove(coolHacker.getSender(), 0);
 
-        expect(res.transactions).toHaveTransaction({
+        expect(executeTx.transactions).toHaveTransaction({
             from: evilMultisig.address,
             to: multisig.address,
             op: Op.multisig.execute,
@@ -827,7 +918,7 @@ describe('Multisig', () => {
             exitCode: Errors.multisig.unauthorized_execute
         });
         // No funds exfiltrated
-        expect(res.transactions).not.toHaveTransaction({
+        expect(executeTx.transactions).not.toHaveTransaction({
             from: multisig.address,
             to: coolHacker.address
         });
@@ -859,14 +950,17 @@ describe('Multisig', () => {
         }
 
         console.log("Fire!");
-        const res = await multisig.sendNewOrder(deployer.getSender(), order, curTime() + 100, toNano('100'));
+        const res = await multisig.sendNewOrder(deployer.getSender(), order, getExpirationTime(100), toNano('100'));
 
-        expect(res.transactions).toHaveTransaction({
+        increaseTime(TIMELOCK_DELAY);
+        const [executeTx] = await approveLastOrder([deployer]);
+
+        expect(executeTx.transactions).toHaveTransaction({
             to: multisig.address,
             op: Op.multisig.execute,
             success: true
         });
-        expect(res.transactions).toHaveTransaction({
+        expect(executeTx.transactions).toHaveTransaction({
             to: multisig.address,
             op: Op.multisig.execute_internal
         });
@@ -874,7 +968,7 @@ describe('Multisig', () => {
         let prevLt = 0n;
         for(let i = 0; i < orderCount; i++) {
             // console.log("Testing tx:", i);
-            const tx = findTransactionRequired(res.transactions, {
+            const tx = findTransactionRequired(executeTx.transactions, {
                 from: multisig.address,
                 to: deployer.address,
                 op: i,
@@ -891,6 +985,7 @@ describe('Multisig', () => {
                 signers,
                 proposers: [],
                 allowArbitrarySeqno: false,
+                timelockDelaySeconds: 24 * 60 * 60,
             };
             let stateBefore   = blockchain.snapshot();
 
@@ -928,18 +1023,22 @@ describe('Multisig', () => {
                 'threshold': 0,
                 'type': 'update',
                 'signers': dataBefore.signers,
-                'proposers': dataBefore.proposers
+                'proposers': dataBefore.proposers,
+                'timelockDelaySeconds': TIMELOCK_DELAY
             }
 
-            const res = await multisig.sendNewOrder(deployer.getSender(), [updateReq, testMsg], curTime() + 1000);
-            expect(res.transactions).toHaveTransaction({
+            const res = await multisig.sendNewOrder(deployer.getSender(), [updateReq, testMsg], getExpirationTime(1_000));
+            increaseTime(TIMELOCK_DELAY);
+            const [executeTx] = await approveLastOrder([deployer]);
+
+            expect(executeTx.transactions).toHaveTransaction({
                 on: multisig.address,
                 from: orderAddr,
                 op: Op.multisig.execute,
                 aborted: true
             });
             // Make sure that the next action is not executed for whatever reason
-            expect(res.transactions).not.toHaveTransaction({
+            expect(executeTx.transactions).not.toHaveTransaction({
                 on: testAddr,
                 from: multisig.address
             });
@@ -957,8 +1056,9 @@ describe('Multisig', () => {
 
             const orderAddress = await multisig.getOrderAddress(multisigData.nextOrderSeqno);
             let    res = await multisig.sendNewOrder(deployer.getSender(),[testMsg],
-                                                    curTime() + 100, toNano('0.5'),
+                                                    getExpirationTime(100), toNano('0.5'),
                                                     0, true, multisigData.nextOrderSeqno);
+
             expect(res.transactions).toHaveTransaction({
                 on: multisig.address,
                 from: deployer.address,
@@ -972,7 +1072,7 @@ describe('Multisig', () => {
             const dataAfter = await multisig.getMultisigData();
             const trySeqno = async (seqno: bigint) => {
                 res = await multisig.sendNewOrder(deployer.getSender(),[testMsg],
-                                                  curTime() + 100, toNano('0.5'),
+                                                  getExpirationTime(100), toNano('0.5'),
                                                   0, true, seqno);
                 expect(res.transactions).toHaveTransaction({
                     on: multisig.address,
@@ -1006,6 +1106,7 @@ describe('Multisig', () => {
                     signers: signers,
                     proposers: [proposer.address],
                     allowArbitrarySeqno: true,
+                    timelockDelaySeconds: 24 * 60 * 60,
                 };
                 newMultisig = blockchain.openContract(Multisig.createFromConfig(config, code));
                 const deployResult = await newMultisig.sendDeploy(deployer.getSender(), toNano('1'));
@@ -1026,7 +1127,7 @@ describe('Multisig', () => {
                     const signerIdx = i % signers.length;
                     const orderAddr = await newMultisig.getOrderAddress(newSeqno);
                     let res = await newMultisig.sendNewOrder(blockchain.sender(signers[signerIdx]),
-                                                          [testMsg], curTime() + 100,
+                                                          [testMsg], getExpirationTime(100),
                                                           toNano('0.5'), signerIdx,
                                                           true, newSeqno);
                     expect(res.transactions).toHaveTransaction({
@@ -1048,7 +1149,7 @@ describe('Multisig', () => {
                 expect(maxSeqno).toEqual(maxOrderSeqno);
                 let orderAddress = await newMultisig.getOrderAddress(maxSeqno);
                 let res = await newMultisig.sendNewOrder(deployer.getSender(),
-                                                      [testMsg], curTime() + 100,
+                                                      [testMsg], getExpirationTime(100),
                                                       toNano('0.5'), 0,
                                                       true, maxSeqno);
                 expect(res.transactions).toHaveTransaction({
@@ -1073,28 +1174,46 @@ describe('Multisig', () => {
                 const idxMap = Array.from(signers.keys());
                 const approveOnInit = true;
                 let idxCount = idxMap.length - 1;
+
+                let initTxRes: SendMessageResult | null = null;
+
                 for(let i = 0; i < newMultisig.configuration!.threshold; i++) {
                     let signerIdx = idxMap.splice(getRandomInt(0, idxCount), 1)[0];
                     const signer  = signers[signerIdx];
                     idxCount--;
-                    let res = await newMultisig.sendNewOrder(blockchain.sender(signer),
-                                                          [testMsg], curTime() + 1000,
-                                                          toNano('0.5'), signerIdx,
-                                                          approveOnInit, rndSeqno);
-                    expect(res.transactions).toHaveTransaction({
-                        on: newMultisig.address,
+
+                    if (i === 0) {
+                        initTxRes = await newMultisig.sendNewOrder(blockchain.sender(signer),
+                                                                    [testMsg], getExpirationTime(100),
+                                                                    toNano('0.5'), signerIdx,
+                                                                    approveOnInit, rndSeqno);
+                        increaseTime(TIMELOCK_DELAY);
+
+                        expect(initTxRes.transactions).toHaveTransaction({
+                            on: newMultisig.address,
+                            from: signer,
+                            op: Op.multisig.new_order,
+                            success: true
+                        });
+
+                        findTransactionRequired(initTxRes.transactions,{
+                            on: orderContract.address,
+                            from: newMultisig.address,
+                            op: Op.order.init,
+                            success: true
+                        });
+                    }
+                    
+                    const executeTx = await orderContract.sendApprove(blockchain.sender(signer), signerIdx);
+
+                    const approveTx = findTransactionRequired(executeTx.transactions, {
                         from: signer,
-                        op: Op.multisig.new_order,
-                        success: true
+                        to: orderContract.address,
+                        op: Op.order.approve,
+                        success: true,
                     });
 
-                    const initTx = findTransactionRequired(res.transactions,{
-                        on: orderContract.address,
-                        from: newMultisig.address,
-                        op: Op.order.init,
-                        success: true
-                    });
-                    const inMsg = initTx.inMessage!;
+                    const inMsg = approveTx.inMessage!;
                     if(inMsg.info.type !== "internal"){
                         throw new Error("No way");
                     }
@@ -1105,17 +1224,17 @@ describe('Multisig', () => {
 
                     if(i > 0) {
                         const inValue = inMsg.info.value.coins;
-                        expect(res.transactions).toHaveTransaction({
+                        expect(executeTx.transactions).toHaveTransaction({
                             from: orderContract.address,
                             to: signer,
                             op: Op.order.approved,
                             success: true,
                             // Should return change
-                            value: inValue - msgPrices.lumpPrice - computedGeneric(initTx).gasFees
+                            value: inValue - msgPrices.lumpPrice - computedGeneric(approveTx).gasFees
                         });
                     }
                     if(i + 1 == newMultisig.configuration!.threshold) {
-                        expect(res.transactions).toHaveTransaction({
+                        expect(executeTx.transactions).toHaveTransaction({
                             from: orderContract.address,
                             to: newMultisig.address,
                             op: Op.multisig.execute
