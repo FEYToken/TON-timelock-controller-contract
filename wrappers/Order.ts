@@ -47,6 +47,7 @@ export class Order implements Contract {
     }
 
     static initMessage (signers: Array<Address>,
+                        unlock_date: number,
                         expiration_date: number,
                         order: Cell,
                         threshold: number = 1,
@@ -59,9 +60,9 @@ export class Order implements Contract {
                 .storeUint(query_id, Params.bitsize.queryId)
                 .storeUint(threshold, Params.bitsize.signerIndex)
                 .storeRef(beginCell().storeDictDirect(arrayToCell(signers)))
+                .storeUint(unlock_date, Params.bitsize.time)
                 .storeUint(expiration_date, Params.bitsize.time)
-                .storeRef(order)
-                .storeBit(approve_on_init);
+                .storeRef(order);
 
        if(approve_on_init) {
            msgBody.storeUint(signer_idx, Params.bitsize.signerIndex);
@@ -73,6 +74,7 @@ export class Order implements Contract {
                      via: Sender,
                      value: bigint,
                      signers: Array<Address>,
+                     unlock_date: number,
                      expiration_date: number,
                      order: Cell,
                      threshold: number = 1,
@@ -84,7 +86,7 @@ export class Order implements Contract {
        await provider.internal(via, {
            value,
            sendMode: SendMode.PAY_GAS_SEPARATELY,
-           body: Order.initMessage(signers, expiration_date, order, threshold, approve_on_init, signer_idx, query_id)
+           body: Order.initMessage(signers, unlock_date, expiration_date, order, threshold, approve_on_init, signer_idx, query_id)
        });
     }
 
@@ -116,7 +118,9 @@ export class Order implements Contract {
        const signers = cellToArray(stack.readCellOpt());
        const approvals = stack.readBigNumberOpt();
        const approvals_num = stack.readNumberOpt();
+       const orderUnlockDate = stack.readBigNumberOpt();
        const expiration_date = stack.readBigNumberOpt();
+       const isCancelled = stack.readBooleanOpt();
        const order = stack.readCellOpt();
        let approvalsArray: Array<boolean>;
        if(approvals !== null) {
@@ -130,7 +134,7 @@ export class Order implements Contract {
        }
        return {
               inited: threshold !== null, multisig, order_seqno, threshold, executed, signers,
-              approvals: approvalsArray, approvals_num: approvals_num, _approvals : approvals, expiration_date, order
+              approvals: approvalsArray, approvals_num: approvals_num, _approvals : approvals, expiration_date, order, orderUnlockDate, isCancelled
        };
     }
 }

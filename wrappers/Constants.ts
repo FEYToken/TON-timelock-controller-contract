@@ -9,7 +9,8 @@ export abstract class Op {
         expired: 0x6,
         approve_rejected : 0xafaf283e,
         approved: 0x82609bf6,
-        init: 0x9c73fba2
+        init: 0x9c73fba2,
+        cancel: 0x83867c68
     }
     static readonly actions = {
         send_message: 0xf1381e5b,
@@ -45,6 +46,7 @@ export abstract class Params {
        orderSeqno : 256,
        signerIndex : 8,
        actionIndex : 8,
-       time: 48
+       time: 48,
+       timelockDelay: 32,
     }
 }

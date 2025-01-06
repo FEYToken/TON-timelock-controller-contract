@@ -10,12 +10,14 @@ export type MultisigConfig = {
     signers: Array<Address>;
     proposers: Array<Address>;
     allowArbitrarySeqno:boolean;
+    timelockDelaySeconds: number;
 };
 
 export type TransferRequest = { type: 'transfer', sendMode:SendMode, message:MessageRelaxed};
 export type UpdateRequest   = {
     type: 'update',
     threshold: number,
+    timelockDelaySeconds: number,
     signers: Array<Address>,
     proposers: Array<Address>
 };
@@ -57,6 +59,7 @@ export function multisigConfigToCell(config: MultisigConfig): Cell {
                 .storeUint(config.signers.length, Params.bitsize.signerIndex)
                 .storeDict(arrayToCell(config.proposers))
                 .storeBit(config.allowArbitrarySeqno)
+                .storeUint(config.timelockDelaySeconds, Params.bitsize.timelockDelay)
            .endCell();
 }
 
@@ -102,6 +105,7 @@ export class Multisig implements Contract {
     static packUpdateRequest(update: UpdateRequest) {
         return beginCell().storeUint(Op.actions.update_multisig_params, Params.bitsize.op)
                           .storeUint(update.threshold, Params.bitsize.signerIndex)
+                          .storeUint(update.timelockDelaySeconds, Params.bitsize.timelockDelay)
                           .storeRef(beginCell().storeDictDirect(arrayToCell(update.signers)))
                           .storeDict(arrayToCell(update.proposers))
                .endCell();
@@ -264,6 +268,7 @@ export class Multisig implements Contract {
         const threshold = stack.readBigNumber();
         const signers = cellToArray(stack.readCellOpt());
         const proposers = cellToArray(stack.readCellOpt());
-        return { nextOrderSeqno, threshold, signers, proposers};
+        const timelockDelaySeconds = stack.readBigNumber();
+        return { nextOrderSeqno, threshold, signers, proposers, timelockDelaySeconds};
     }
 }
