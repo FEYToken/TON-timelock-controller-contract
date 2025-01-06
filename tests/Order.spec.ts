@@ -14,6 +14,10 @@ type ApproveResponse = {
     exit_code?: number
 };
 
+const ORDER_TIMELOCK = 2 * 60 * 60; // 2 hours
+
+const getOrderUnlockDate = (timeLockSeconds: number) => Math.floor(Date.now() / 1000) + timeLockSeconds;
+
 describe('Order', () => {
     let code: Cell;
     let blockchain: Blockchain;
@@ -35,6 +39,7 @@ describe('Order', () => {
     beforeAll(async () => {
         let code_raw = await compile('Order');
         blockchain = await Blockchain.create();
+        blockchain.now = Math.floor(Date.now() / 1000);
 
         const _libs = Dictionary.empty(Dictionary.Keys.BigUint(256), Dictionary.Values.Cell());
         _libs.set(BigInt(`0x${code_raw.hash().toString('hex')}`), code_raw);
@@ -152,7 +157,7 @@ describe('Order', () => {
 
         threshold = 5
         signers = await blockchain.createWallets(threshold * 2);
-        const res = await orderContract.sendDeploy(multisig.getSender(), toNano('1'), signers.map((s) => s.address), expDate, mockOrder, threshold);
+        const res = await orderContract.sendDeploy(multisig.getSender(), toNano('1'), signers.map((s) => s.address), getOrderUnlockDate(ORDER_TIMELOCK), expDate, mockOrder, threshold);
         expect(res.transactions).toHaveTransaction({deploy: true, success: true});
 
         const stringify = (addr: Address) => addr.toString();
@@ -188,7 +193,7 @@ describe('Order', () => {
         const expDate =  blockchain.now! + 1000;
 
         const testSender = await blockchain.treasury('totally_not_multisig');
-        let res = await newOrder.sendDeploy(testSender.getSender(), toNano('1'), signers.map(s => s.address), expDate, mockOrder, threshold);
+        let res = await newOrder.sendDeploy(testSender.getSender(), toNano('1'), signers.map(s => s.address), getOrderUnlockDate(ORDER_TIMELOCK), expDate, mockOrder, threshold);
 
         expect(res.transactions).toHaveTransaction({
             from: testSender.address,
@@ -203,7 +208,7 @@ describe('Order', () => {
         expect(dataBefore.inited).toBe(false);
         expect(dataBefore.threshold).toBe(null);
 
-        res = await newOrder.sendDeploy(multisig.getSender(), toNano('1'), signers.map(s => s.address), expDate, mockOrder, threshold);
+        res = await newOrder.sendDeploy(multisig.getSender(), toNano('1'), signers.map(s => s.address), getOrderUnlockDate(ORDER_TIMELOCK), expDate, mockOrder, threshold);
 
         expect(res.transactions).toHaveTransaction({
             from: multisig.address,
@@ -222,7 +227,7 @@ describe('Order', () => {
         }, code));
         const expDate = blockchain.now! - 1;
 
-        let res = await newOrder.sendDeploy(multisig.getSender(), toNano('1'), signers.map(s => s.address), expDate, mockOrder, threshold);
+        let res = await newOrder.sendDeploy(multisig.getSender(), toNano('1'), signers.map(s => s.address), getOrderUnlockDate(ORDER_TIMELOCK), expDate, mockOrder, threshold);
 
         expect(res.transactions).toHaveTransaction({
             from: multisig.address,
@@ -239,7 +244,7 @@ describe('Order', () => {
         expect(dataBefore.threshold).toBe(null);
 
         // now == expiration_date should be allowed (currently not allowed).
-        res = await newOrder.sendDeploy(multisig.getSender(), toNano('1'), signers.map(s => s.address), blockchain.now!, mockOrder, threshold);
+        res = await newOrder.sendDeploy(multisig.getSender(), toNano('1'), signers.map(s => s.address), getOrderUnlockDate(ORDER_TIMELOCK), blockchain.now!, mockOrder, threshold);
 
         expect(res.transactions).toHaveTransaction({
             from: multisig.address,
@@ -257,7 +262,7 @@ describe('Order', () => {
         const dataBefore = await getContractData(orderContract.address);
         const approveInit = false;
 
-        const res = await orderContract.sendDeploy(multisig.getSender(), toNano('1'), signers.map(s => s.address), expDate, mockOrder, threshold, approveInit);
+        const res = await orderContract.sendDeploy(multisig.getSender(), toNano('1'), signers.map(s => s.address), getOrderUnlockDate(ORDER_TIMELOCK), expDate, mockOrder, threshold);
 
         expect(res.transactions).toHaveTransaction({
             from: multisig.address,
@@ -282,7 +287,7 @@ describe('Order', () => {
         const expDate       = Number(dataBefore.expiration_date);
 
         let   testInit = async (signers: Address[], expDate : number, order: Cell, threshold: number, exp: number) => {;
-            const res = await orderContract.sendDeploy(multisig.getSender(), toNano('1'), signers, expDate, order, threshold, approveOnInit, idx);
+            const res = await orderContract.sendDeploy(multisig.getSender(), toNano('1'), signers, getOrderUnlockDate(ORDER_TIMELOCK), expDate, order, threshold);
             expect(res.transactions).toHaveTransaction({
                 on: orderContract.address,
                 from: multisig.address,
@@ -314,14 +319,15 @@ describe('Order', () => {
         // Change threshold
         await testInit(curSigners, expDate, mockOrder, threshold + getRandomInt(10, 20), expInited);
         // Expect success
-        await testInit(curSigners, expDate, mockOrder, threshold, expSuccess);
+        await testInit(curSigners, expDate, mockOrder, threshold, expInited);
     });
-    it('order contract should treat multiple init messages as votes if approve_on_init = true', async () => {
+    // This test is disabled because updated timelock logic is not allow to init order more than once
+    it.skip('order contract should treat multiple init messages as votes if approve_on_init = true', async () => {
         const approveOnInit = true;
         for(let i = 0; i < threshold; i++) {
             const dataBefore = await orderContract.getOrderData();
             const expDate    = Number(dataBefore.expiration_date);
-            const res = await orderContract.sendDeploy(multisig.getSender(), toNano('1'), signers.map(s => s.address), expDate, mockOrder, threshold, approveOnInit, i);
+            const res = await orderContract.sendDeploy(multisig.getSender(), toNano('1'), signers.map(s => s.address), getOrderUnlockDate(ORDER_TIMELOCK), expDate, mockOrder, threshold);
 
             expect(res.transactions).toHaveTransaction({
                 on: orderContract.address,
@@ -349,13 +355,14 @@ describe('Order', () => {
             }
         }
     })
-    it('should not be possible to use multiple init msg to approve multiple idx twice', async () => {
+    // This test is disabled because updated timelock logic is not allow to init order more than once
+    it.skip('should not be possible to use multiple init msg to approve multiple idx twice', async () => {
         const expDate   = Number((await orderContract.getOrderData()).expiration_date);
         const signerIdx = getRandomInt(0, signers.length - 1);
 
         const approveOnInit = true;
 
-        let   res = await orderContract.sendDeploy(multisig.getSender(), toNano('1'), signers.map(s => s.address), expDate, mockOrder, threshold, approveOnInit, signerIdx);
+        let   res = await orderContract.sendDeploy(multisig.getSender(), toNano('1'), signers.map(s => s.address), getOrderUnlockDate(ORDER_TIMELOCK), expDate, mockOrder, threshold);
 
         expect(res.transactions).toHaveTransaction({
             on: orderContract.address,
@@ -370,7 +377,7 @@ describe('Order', () => {
 
         let dataBefore = await getContractData(orderContract.address);
         // Repeat init
-        res = await orderContract.sendDeploy(multisig.getSender(), toNano('1'), signers.map(s => s.address), expDate, mockOrder, threshold, approveOnInit, signerIdx);
+        res = await orderContract.sendDeploy(multisig.getSender(), toNano('1'), signers.map(s => s.address), getOrderUnlockDate(ORDER_TIMELOCK), expDate, mockOrder, threshold);
 
         expect(res.transactions).toHaveTransaction({
             from: orderContract.address,
@@ -680,7 +687,7 @@ describe('Order', () => {
             orderSeqno: 1
         }, code));
 
-        let res = await jumboOrder.sendDeploy(multisig.getSender(), toNano('1'), jumboSigners.map(s => s.address), blockchain.now! + 1000, mockOrder, jumboSigners.length);
+        let res = await jumboOrder.sendDeploy(multisig.getSender(), toNano('1'), jumboSigners.map(s => s.address), getOrderUnlockDate(ORDER_TIMELOCK), blockchain.now! + 1000, mockOrder, jumboSigners.length);
 
         expect(res.transactions).toHaveTransaction({
             from: multisig.address,
