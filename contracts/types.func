@@ -50,3 +50,5 @@ const int MAX_ORDER_SEQNO = 0xffffffffffffffffffffffffffffffffffffffffffffffffff
 builder store_order_seqno(builder b, int seqno) inline {
     return b.store_uint(seqno, ORDER_SEQNO_SIZE);
 }
+
+const int TIMELOCK_DELAY_SIZE = 32;

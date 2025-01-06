@@ -14,7 +14,8 @@ const int error::invalid_signers = 110;
 const int error::expired = 111;
 const int error::already_executed = 112;
 
+const int error::timelock_not_expired = 150;
+const int error::cancelled = 151;
+const int error::expiration_date_less_than_unlock_date = 152;
+
 const int error::unknown_op = 0xffff;
-
-
-

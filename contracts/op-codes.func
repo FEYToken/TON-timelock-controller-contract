@@ -7,6 +7,7 @@ const int op::approve = 0xa762230f;
 const int op::approve_accepted = 0x82609bf6;
 const int op::approve_rejected = 0xafaf283e;
 
+const int op::cancel = 0x83867c68;
+
 const int actions::send_message = 0xf1381e5b;
 const int actions::update_multisig_params = 0x1d0cfbd3;
-

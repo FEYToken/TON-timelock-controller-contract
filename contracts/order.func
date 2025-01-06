@@ -13,7 +13,9 @@ global int sent_for_execution?;
 global cell signers;
 global int approvals_mask;
 global int approvals_num;
+global int order_unlock_date;
 global int expiration_date;
+global int is_cancelled?;
 global cell order;
 
 () load_data() impure inline {
@@ -28,7 +30,9 @@ global cell order;
         signers = null();
         approvals_mask = null();
         approvals_num = null();
+        order_unlock_date = null();
         expiration_date = null();
+        is_cancelled? = null();
         order = null();
     } else {
         threshold = ds~load_index();
@@ -36,7 +40,9 @@ global cell order;
         signers = ds~load_nonempty_dict();
         approvals_mask = ds~load_uint(MASK_SIZE);
         approvals_num = ds~load_index();
+        order_unlock_date = ds~load_timestamp();
         expiration_date = ds~load_timestamp();
+        is_cancelled? = ds~load_bool();
         order = ds~load_ref();
         ds.end_parse();
     }
@@ -52,7 +58,9 @@ global cell order;
         .store_nonempty_dict(signers)
         .store_uint(approvals_mask, MASK_SIZE)
         .store_index(approvals_num)
+        .store_timestamp(order_unlock_date)
         .store_timestamp(expiration_date)
+        .store_bool(is_cancelled?)
         .store_ref(order)
         .end_cell()
     );
@@ -114,7 +122,9 @@ slice get_text_comment(slice in_msg_body) impure inline {
             begin_cell()
             .store_op_and_query_id(op::execute, query_id)
             .store_order_seqno(order_seqno)
+            .store_timestamp(order_unlock_date)
             .store_timestamp(expiration_date)
+            .store_bool(is_cancelled?)
             .store_index(approvals_num)
             .store_hash(signers.cell_hash())
             .store_ref(order),
@@ -156,6 +166,12 @@ slice get_text_comment(slice in_msg_body) impure inline {
     }
 }
 
+() validate_signer_by_index(int signer_index, slice sender_address) impure inline {
+    (slice signer_address, int found?) = signers.udict_get?(INDEX_SIZE, signer_index);
+    throw_unless(error::unauthorized_sign, found?);
+    throw_unless(error::unauthorized_sign, equal_slices_bits(sender_address, signer_address));
+}
+
 ;; RECEIVE
 
 () recv_internal(int balance, int msg_value, cell in_msg_full, slice in_msg_body) {
@@ -186,54 +202,48 @@ slice get_text_comment(slice in_msg_body) impure inline {
 
     if (op == op::init) {
         throw_unless(error::unauthorized_init, equal_slices_bits(sender_address, multisig_address));
+        throw_unless(error::already_inited, null?(threshold));
 
-        if (null?(threshold)) {
-            ;; Let's init
-            threshold = in_msg_body~load_index();
-            sent_for_execution? = false;
-            signers = in_msg_body~load_nonempty_dict();
-            approvals_mask = 0;
-            approvals_num = 0;
-            expiration_date = in_msg_body~load_timestamp();
-            throw_unless(error::expired, expiration_date >= now()); ;; in case of error TONs will bounce back to multisig
-            order = in_msg_body~load_ref();
+        ;; Let's init
+        threshold = in_msg_body~load_index();
+        sent_for_execution? = false;
+        is_cancelled? = false;
+        signers = in_msg_body~load_nonempty_dict();
+        approvals_mask = 0;
+        approvals_num = 0;
+        order_unlock_date = in_msg_body~load_timestamp();
+        expiration_date = in_msg_body~load_timestamp();
+        throw_unless(error::expired, expiration_date >= now()); ;; in case of error TONs will bounce back to multisig
+        order = in_msg_body~load_ref();
 
-            int approve_on_init? = in_msg_body~load_bool();
-            if (approve_on_init?) {
-                int signer_index = in_msg_body~load_index();
-                add_approval(signer_index);
-                try_execute(query_id);
-            }
-            in_msg_body.end_parse();
-            save_data();
-            return ();
-        } else {
-            ;; order is inited second time, if it is inited by another oracle
-            ;; we count it as approval
-            throw_unless(error::already_inited, in_msg_body~load_index() == threshold);
-            throw_unless(error::already_inited, in_msg_body~load_nonempty_dict().cell_hash() == signers.cell_hash());
-            throw_unless(error::already_inited,in_msg_body~load_timestamp() == expiration_date);
-            throw_unless(error::already_inited, in_msg_body~load_ref().cell_hash() == order.cell_hash());
-
-            int approve_on_init? = in_msg_body~load_bool();
-            throw_unless(error::already_inited, approve_on_init?);
-            int signer_index = in_msg_body~load_index();
-            in_msg_body.end_parse();
-            (slice signer_address, int found?) = signers.udict_get?(INDEX_SIZE, signer_index);
-            throw_unless(error::unauthorized_sign, found?);
-            approve(signer_index, signer_address, query_id);
-            return ();
-        }
+        in_msg_body.end_parse();
+        save_data();
+        return ();
     }
 
     if (op == op::approve) {
         int signer_index = in_msg_body~load_index();
         in_msg_body.end_parse();
-        (slice signer_address, int found?) = signers.udict_get?(INDEX_SIZE, signer_index);
-        throw_unless(error::unauthorized_sign, found?);
-        throw_unless(error::unauthorized_sign, equal_slices_bits(sender_address, signer_address));
+
+        validate_signer_by_index(signer_index, sender_address);
 
         approve(signer_index, sender_address, query_id);
+        return ();
+    }
+
+    if (op == op::cancel) {
+        int signer_index = in_msg_body~load_index();
+        in_msg_body.end_parse();
+
+        validate_signer_by_index(signer_index, sender_address);
+
+        throw_if(error::already_executed, sent_for_execution?);
+        throw_if(error::cancelled, is_cancelled?);
+        throw_unless(error::expired, expiration_date >= now());
+
+        is_cancelled? = true;
+        save_data();
+
         return ();
     }
 
@@ -252,7 +262,9 @@ _ get_order_data() method_id {
         signers,
         approvals_mask,
         approvals_num,
+        order_unlock_date,
         expiration_date,
+        is_cancelled?,
         order
     );
 }

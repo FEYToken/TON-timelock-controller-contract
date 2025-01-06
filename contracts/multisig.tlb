@@ -61,6 +61,7 @@ new_order#f718510f query_id:uint64
                    order:^Order = InternalMsgBody;
 execute#75097f5d query_id:uint64 
                  order_seqno:uint256
+                 order_unlock_date:uint48
                  expiration_date:uint48
                  approvals_num:uint8
                  signers_hash:bits256
@@ -74,6 +75,7 @@ execute_internal#a32c59bf query_id:uint64 order:^Order = InternalMsgBody;
 init#9c73fba2 query_id:uint64
               threshold:uint8
               signers:^(Hashmap 8 MsgAddressInt)
+              order_unlock_date:uint48
               expiration_date:uint48
               order:^Order
               approve_on_init:(## 1)
@@ -83,3 +85,4 @@ approve#a762230f query_id:uint64 signer_index:uint8 = InternalMsgBody;
 approve_accepted#82609bf6 query_id:uint64 = InternalMsgBody;
 approve_rejected#afaf283e query_id:uint64 exit_code:uint32 = InternalMsgBody;
 
+cancel#83867c68 query_id:uint64 signer_index:uint8 = InternalMsgBody;
