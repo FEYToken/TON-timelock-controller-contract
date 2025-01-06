@@ -202,7 +202,7 @@ slice get_text_comment(slice in_msg_body) impure inline {
 
     if (op == op::init) {
         throw_unless(error::unauthorized_init, equal_slices_bits(sender_address, multisig_address));
-        throw_unless(error::already_inited, null?(threshold));
+        throw_unless(error::already_initiated, null?(threshold));
 
         ;; Let's init
         threshold = in_msg_body~load_index();
