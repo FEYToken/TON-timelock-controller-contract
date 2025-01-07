@@ -224,7 +224,7 @@ describe('Multisig', () => {
             to: orderAddress
         });
     });
-    it('should reject order creation with insufficient incomming value', async () => {
+    it('should reject order creation with insufficient incoming value', async () => {
         const year = 3600 * 24 * 365;
 
         const initialSeqno = (await multisig.getMultisigData()).nextOrderSeqno;
@@ -372,7 +372,7 @@ describe('Multisig', () => {
             success: true,
             outMessagesCount: 2 // Make sure both approval notification and exec message is produced
         });
-        // Make sure exec transaction is not yet proccessed
+        // Make sure exec transaction is not yet processed
         expect(findTransaction(txs, {
             from: orderAddress,
             on: multisig.address,
@@ -382,7 +382,7 @@ describe('Multisig', () => {
         blockchain.now++;
         // Continue execution
         txs = await executeFrom(txIter);
-        // Execute message was sent, but failed due to expiery
+        // Execute message was sent, but failed due to expire
         expect(txs).toHaveTransaction({
             from: orderAddress,
             on: multisig.address,
@@ -400,7 +400,7 @@ describe('Multisig', () => {
         });
     });
     it('should be possible to execute order by post init approval', async () => {
-        // Same test as above, but with manulal approval
+        // Same test as above, but with manual approval
         blockchain.now = curTime();
         let initialSeqno = (await multisig.getMultisigData()).nextOrderSeqno;
         // Gets deployed by proposer, so first approval is not granted right away

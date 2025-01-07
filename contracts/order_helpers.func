@@ -55,7 +55,7 @@ int calculate_order_processing_cost(cell order_body, cell signers, int duration)
     {- There are following costs:
        1) Gas cost on Multisig contract
        2) Forward cost for Multisig->Order message
-       3) Gas cost on Order initialisation
+       3) Gas cost on Order initialization
        4) Storage cost on Order
        5) Gas cost on Order finalization
        6) Forward cost for Order->Multisig message
