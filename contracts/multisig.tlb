@@ -46,6 +46,7 @@ addr_var$11 anycast:(Maybe Anycast) addr_len:(## 9)
 
 send_message#f1381e5b mode:uint8 message:^Cell = Action;
 update_multisig_param#1d0cfbd3 threshold:uint8
+                               timelock_delay_seconds:uint32
                                signers:^(Hashmap 8 MsgAddressInt)
                                proposers:(HashmapE 8 MsgAddressInt) = Action;
 
