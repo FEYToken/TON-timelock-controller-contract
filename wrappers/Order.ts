@@ -51,8 +51,6 @@ export class Order implements Contract {
                         expiration_date: number,
                         order: Cell,
                         threshold: number = 1,
-                        approve_on_init: boolean = false,
-                        signer_idx: number = 0,
                         query_id : number | bigint = 0)   {
 
        const msgBody = beginCell()
@@ -64,10 +62,6 @@ export class Order implements Contract {
                 .storeUint(expiration_date, Params.bitsize.time)
                 .storeRef(order);
 
-       if(approve_on_init) {
-           msgBody.storeUint(signer_idx, Params.bitsize.signerIndex);
-       }
-
        return msgBody.endCell();
     }
     async sendDeploy(provider: ContractProvider,
@@ -78,15 +72,12 @@ export class Order implements Contract {
                      expiration_date: number,
                      order: Cell,
                      threshold: number = 1,
-                     approve_on_init: boolean = false,
-                     signer_idx: number = 0,
                      query_id : number | bigint = 0) {
-
 
        await provider.internal(via, {
            value,
            sendMode: SendMode.PAY_GAS_SEPARATELY,
-           body: Order.initMessage(signers, unlock_date, expiration_date, order, threshold, approve_on_init, signer_idx, query_id)
+           body: Order.initMessage(signers, unlock_date, expiration_date, order, threshold, query_id)
        });
     }
 
