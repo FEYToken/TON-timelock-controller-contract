@@ -24,6 +24,8 @@ export const storageGeneric = (trans:Transaction) => {
     return trans.description.storagePhase;
 };
 
+const MULTISIG_TIMELOCK = 24 * 60 * 60;
+
 describe('FeeComputation', () => {
     let multisig_code: Cell;
     let order_code: Cell;
@@ -69,12 +71,14 @@ describe('FeeComputation', () => {
             signers: [deployer.address, second.address],
             proposers: [proposer.address],
             allowArbitrarySeqno: false,
+            timelockDelaySeconds: MULTISIG_TIMELOCK,
         };
         let jumboConfig = {
             threshold: 2,
             signers: signers.map(s => s.address),
             proposers: [proposer.address],
             allowArbitrarySeqno: false,
+            timelockDelaySeconds: MULTISIG_TIMELOCK,
         }
 
         multisigWallet = blockchain.openContract(Multisig.createFromConfig(config, multisig_code));
@@ -305,7 +309,8 @@ describe('FeeComputation', () => {
                 threshold,
                 signers : signers.map(x => x.address),
                 proposers: [proposer.address],
-                allowArbitrarySeqno: false
+                allowArbitrarySeqno: false,
+                timelockDelaySeconds: MULTISIG_TIMELOCK,
             };
 
             const multisig = blockchain.openContract(Multisig.createFromConfig(config, multisig_code));
@@ -348,7 +353,7 @@ describe('FeeComputation', () => {
             totalGas += res.transactions.reduce(summTx, 0n);
 
             blockchain.now += lifetime;
-            for (let i = signerIdx; i < threshold; i++ ) {
+            for (let i = 0; i < threshold; i++ ) {
                 res = await orderContract.sendApprove(signers[i].getSender(), i);
                 totalGas += res.transactions.reduce(summTx, 0n);
             }
