@@ -93,6 +93,17 @@ export class Order implements Contract {
         });
     }
 
+    async sendCancel(provider: ContractProvider, via: Sender, signer_idx: number, value: bigint = toNano('0.1'), query_id: number | bigint = 0) {
+        await provider.internal(via, {
+            value,
+            sendMode: SendMode.PAY_GAS_SEPARATELY,
+            body: beginCell()
+                    .storeUint(Op.order.cancel, Params.bitsize.op)
+                    .storeUint(query_id, Params.bitsize.queryId)
+                    .storeUint(signer_idx, Params.bitsize.signerIndex)
+                  .endCell()
+        });
+    }
 
     async getOrderData(provider: ContractProvider) {
        /*

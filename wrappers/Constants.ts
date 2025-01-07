@@ -26,7 +26,10 @@ export abstract class Errors {
         unauthorized_execute : 101,
         singers_outdated : 102,
         invalid_dictionary_sequence: 103,
-        expired: 111
+        expired: 111,
+        timelock_not_expired: 150,
+        cancelled: 151,
+        expiration_date_less_than_unlock_date: 152,
     }
     static readonly order = {
         unauthorized_init : 104,

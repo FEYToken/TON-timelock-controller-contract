@@ -1245,4 +1245,146 @@ describe('Multisig', () => {
             });
         });
     });
+
+    describe('TimeLock', () => {
+        const createMsg = (): TransferRequest => ({
+            type: "transfer",
+            sendMode: 1,
+            message: internal_relaxed({
+                to: multisig.address,
+                value: toNano('0.015'),
+                body: beginCell().storeUint(0x12345, 32).endCell()
+            })
+        })
+        
+        it("shouldn't able to execute order before timelock expired", async () => {
+            const orderAddress = await multisig.getOrderAddress((await multisig.getMultisigData()).nextOrderSeqno);
+            await multisig.sendNewOrder(proposer.getSender(), [createMsg()], getExpirationTime(1_000));
+
+            const [executeResult] = await approveLastOrder([deployer]);
+            expect(executeResult.transactions).toHaveTransaction({
+                from: orderAddress,
+                to: multisig.address,
+                op: Op.multisig.execute,
+                success: false,
+                exitCode: Errors.multisig.timelock_not_expired
+            });
+
+            increaseTime(TIMELOCK_DELAY - 1);
+
+            {
+                const orderAddress = await multisig.getOrderAddress((await multisig.getMultisigData()).nextOrderSeqno);
+                await multisig.sendNewOrder(proposer.getSender(), [testMsg], getExpirationTime(1_000));
+
+                const [executeResult] = await approveLastOrder([deployer]);
+                expect(executeResult.transactions).toHaveTransaction({
+                    from: orderAddress,
+                    to: multisig.address,
+                    success: false,
+                    op: Op.multisig.execute,
+                    exitCode: Errors.multisig.timelock_not_expired
+                });
+            }
+        });
+
+        it("should be able to execute order after timelock expired", async () => {
+            const orderAddress = await multisig.getOrderAddress((await multisig.getMultisigData()).nextOrderSeqno);
+            await multisig.sendNewOrder(proposer.getSender(), [createMsg()], getExpirationTime(1_000));
+            
+            increaseTime(TIMELOCK_DELAY);
+
+            const [executeResult] = await approveLastOrder([deployer]);
+            expect(executeResult.transactions).toHaveTransaction({
+                from: orderAddress,
+                to: multisig.address,
+                op: Op.multisig.execute,
+                success: true,
+            });
+        });
+
+        it("shouldn't be able create order with expiration date less than timelock date", async () => {
+            const orderCreationResult = await multisig.sendNewOrder(proposer.getSender(), [createMsg()], blockchain.now! + TIMELOCK_DELAY  - 1);
+
+            expect(orderCreationResult.transactions).toHaveTransaction({
+                from: proposer.address,
+                to: multisig.address,
+                op: Op.multisig.new_order,
+                exitCode: Errors.multisig.expiration_date_less_than_unlock_date,
+                success: false,
+            });
+        });
+
+        it("should be able to cancel order", async () => {
+            await multisig.sendNewOrder(proposer.getSender(), [createMsg()], getExpirationTime(1_000));
+
+            const orderAddress = await multisig.getOrderAddress((await multisig.getMultisigData()).nextOrderSeqno - 1n);
+            const orderContract = blockchain.openContract(Order.createFromAddress(orderAddress));
+
+            const cancelResult = await orderContract.sendCancel(deployer.getSender(), 0);
+            expect(cancelResult.transactions).toHaveTransaction({
+                from: deployer.address,
+                to: orderAddress,
+                op: Op.order.cancel,
+                success: true,
+            });
+
+            const { isCancelled } = await orderContract.getOrderData();
+            expect(isCancelled).toBe(true);
+        });
+
+        it("shouldn't be able to execute cancelled order", async () => {
+            await multisig.sendNewOrder(proposer.getSender(), [createMsg()], getExpirationTime(1_000));
+
+            const orderAddress = await multisig.getOrderAddress((await multisig.getMultisigData()).nextOrderSeqno - 1n);
+            const orderContract = blockchain.openContract(Order.createFromAddress(orderAddress));
+
+            const cancelResult = await orderContract.sendCancel(deployer.getSender(), 0);
+            expect(cancelResult.transactions).toHaveTransaction({
+                from: deployer.address,
+                to: orderAddress,
+                op: Op.order.cancel,
+                success: true,
+            });
+
+            increaseTime(TIMELOCK_DELAY);
+
+            const [executeResult] = await approveLastOrder([deployer]);
+            expect(executeResult.transactions).toHaveTransaction({
+                from: orderAddress,
+                to: multisig.address,
+                op: Op.multisig.execute,
+                success: false,
+                exitCode: Errors.multisig.cancelled
+            });
+        });
+
+        it("only signer should be able to cancel order", async () => {
+            await multisig.sendNewOrder(proposer.getSender(), [createMsg()], getExpirationTime(1_000));
+
+            const orderAddress = await multisig.getOrderAddress((await multisig.getMultisigData()).nextOrderSeqno - 1n);
+            const orderContract = blockchain.openContract(Order.createFromAddress(orderAddress));
+
+            const attemptsCount = 10;
+            for (let index = 0; index < attemptsCount; index++) {
+                const notSigner = await blockchain.treasury(`notSigner${index}`);
+                const cancelResult = await orderContract.sendCancel(notSigner.getSender(), 0);
+
+                expect(cancelResult.transactions).toHaveTransaction({
+                    from: notSigner.address,
+                    to: orderAddress,
+                    op: Op.order.cancel,
+                    success: false,
+                    exitCode: Errors.order.unauthorized_sign
+                });
+            }
+
+            const cancelResult = await orderContract.sendCancel(deployer.getSender(), 0);
+            expect(cancelResult.transactions).toHaveTransaction({
+                from: deployer.address,
+                to: orderAddress,
+                op: Op.order.cancel,
+                success: true,
+            });
+        });
+    });
 });
