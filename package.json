@@ -1,5 +1,5 @@
 {
-    "name": "Multiowner",
+    "name": "time-lock-controller",
     "version": "0.0.1",
     "scripts": {
         "start": "blueprint run",
